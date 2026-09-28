@@ -11,4 +11,7 @@ dependencies = [
     "langchain-tavily>=0.2.18",
     "langgraph>=1.2.11",
     "langgraph-cli[inmem]>=0.4.31",
+    "pdfplumber>=0.11.10",
+    "psycopg2-binary>=2.9.13",
+    "pypdf>=6.19.0",
 ]

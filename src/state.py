@@ -1,8 +1,10 @@
 from typing import TypedDict, Annotated, Optional
 from langgraph.graph.message import add_messages
 
-class AgentState(TypedDict) :
+
+class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
+    file_path: Optional[str]
     country: Optional[str]
     raw_document: Optional[str]
     ingredients: Optional[list]
