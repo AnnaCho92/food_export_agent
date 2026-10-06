@@ -187,3 +187,7 @@ __marimo__/
 
 # LangGraph
 .langgraph_api/
+
+chroma_db/
+uploads/
+output.txt

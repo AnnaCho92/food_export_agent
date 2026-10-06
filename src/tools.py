@@ -6,6 +6,7 @@ import pdfplumber
 from pydantic import BaseModel
 from pypdf import PdfReader
 from langchain_tavily import TavilySearch
+from src.prompts import ENRICHMENT_SYSTEM_PROMPT, REPORT_SYSTEM_PROMPT
 
 
 # ── 도구: 웹 검색 ──
@@ -143,7 +144,7 @@ class EnrichmentInfo(BaseModel):
     e_number: Optional[str] = None
 
 
-_enrichment_model = ChatOpenAI(model="gpt-4o-mini")
+_enrichment_model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 
 def enrich_ingredient(name: str) -> EnrichmentInfo:
@@ -160,3 +161,89 @@ def enrich_ingredient(name: str) -> EnrichmentInfo:
         {"role": "system", "content": ENRICHMENT_SYSTEM_PROMPT},
         {"role": "user", "content": f"Ingredient: {name}\n\nSearch results: {search_results}"},
     ])
+
+class ExportReport(BaseModel):
+    is_exportable: bool
+    summary: str
+    violations: list[str]
+    recommendations: list[str]
+
+
+def generate_export_report(compliance_results: list[dict]) -> ExportReport:
+    """성분별 규정 준수 결과를 종합해서 최종 수출 가능 여부 리포트 생성 (격리된 호출)"""
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    structured_llm = llm.with_structured_output(ExportReport)
+
+    results_text = "\n".join(
+        f"- {r['ingredient_name']} ({r['e_number'] or 'N/A'}): "
+        f"{'허용' if r['is_compliant'] else '위반/제한'} - {r['notes']}"
+        for r in compliance_results
+    )
+
+    prompt = f"{REPORT_SYSTEM_PROMPT}\n\n성분별 규정 준수 결과:\n{results_text}"
+    return structured_llm.invoke(prompt)
+
+# ── DB: 국가 조회 ──
+def get_country_names() -> list[str]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT country_name FROM country ORDER BY country_name;")
+    names = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return names
+
+
+def get_country_id(country_name: str) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT country_id FROM country WHERE country_name = %s;",
+        (country_name,),
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if row is None:
+        raise ValueError(f"country 테이블에 '{country_name}'이(가) 없습니다.")
+    return row[0]
+
+
+# ── DB 저장: 수출 요청 + 검토 결과 ──
+def save_export_request_and_result(
+    product_id: int,
+    country_id: int,
+    risk_level: str,
+    result_summary: str,
+    recommendation: str,
+) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO export_request
+                (product_id, country_id, request_status, source_type, completed_at)
+            VALUES (%s, %s, 'COMPLETED', 'FILE', CURRENT_TIMESTAMP)
+            RETURNING request_id;
+            """,
+            (product_id, country_id),
+        )
+        request_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            INSERT INTO regulation_check_result
+                (request_id, risk_level, result_summary, recommendation)
+            VALUES (%s, %s, %s, %s);
+            """,
+            (request_id, risk_level, result_summary, recommendation),
+        )
+        conn.commit()
+        return request_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
